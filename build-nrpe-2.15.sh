@@ -10,7 +10,7 @@ SANDBOX=$PKGDIR/sandbox-nrpe
 scriptname=${0##*/}
 scriptdir=${0%/*}
 
-packagerel=5
+packagerel=7
 nrpe_user=op5nrpe
 nrpe_user_solaris=op5nrpe
 nrpe_uid=95118
@@ -220,13 +220,23 @@ EOF
             exit 1
          fi
 
-         mkdir -p $SANDBOX/$prefix/scripts $SANDBOX/$prefix/plugins-contrib $SANDBOX/$prefix/data $SANDBOX/$prefix/etc/init.d
-         chown -R $nrpe_user:$nrpe_group $SANDBOX/$prefix/data $SANDBOX/$prefix/scripts $SANDBOX/$prefix/plugins-contrib $SANDBOX/$prefix/etc/init.d
+         mkdir -p $SANDBOX/$prefix/scripts $SANDBOX/$prefix/plugins-contrib $SANDBOX/$prefix/data $SANDBOX/$prefix/etc/init.d $SANDBOX/var/run/op5
+         chown -R $nrpe_user:$nrpe_group $SANDBOX/$prefix/data $SANDBOX/$prefix/scripts $SANDBOX/$prefix/plugins-contrib $SANDBOX/$prefix/etc/init.d $SANDBOX/var/run/op5
          nrpe_initscript $DISTVER > $SANDBOX/$prefix/etc/init.d/nrpe
          chmod 755 $SANDBOX/$prefix/etc/init.d/nrpe
+         chmod 766 $SANDBOX/var/run/op5
 
          # systemd
          if [ -d '/usr/lib/systemd/system' ]; then
+
+/usr/bin/install -c -m 755 -o root -g root -d $SANDBOX/usr
+/usr/bin/install -c -m 555 -o root -g root -d $SANDBOX/usr/lib
+/usr/bin/install -c -m 755 -o root -g root -d $SANDBOX/usr/lib/systemd
+/usr/bin/install -c -m 755 -o root -g root -d $SANDBOX/usr/lib/systemd/system
+/usr/bin/install -c -m 755 -o root -g root -d $SANDBOX/usr/lib/tmpfiles.d
+
+echo "d /run/op5 0755 $nrpe_user $nrpe_group" > $SANDBOX/usr/lib/tmpfiles.d/nrpe.conf
+chmod 644 $SANDBOX/usr/lib/tmpfiles.d/nrpe.conf
 
 cat << EOF > $SANDBOX/usr/lib/systemd/system/nrpe.service
 [Unit]
@@ -245,7 +255,7 @@ ExecStart=/opt/op5/nrpe/bin/nrpe -c /opt/op5/etc/nrpe.cfg -d
 WantedBy=multi-user.target
 EOF
 
-         chown -R $nrpe_user:$nrpe_group $SANDBOX/etc/init.d/nrpe.service
+         chmod 644 $SANDBOX/usr/lib/systemd/system/nrpe.service
 
          fi
 
@@ -288,13 +298,10 @@ NRPE agent installed in $prefix
 %post
 rm -f /etc/init.d/nrpe
 ln -s $prefix/etc/init.d/nrpe /etc/init.d/nrpe
-mkdir -p /var/run/op5
-chmod 0766 /var/run/op5
-chown $nrpe_uid:$nrpe_gid /var/run/op5
 
 if [ -d /usr/lib/systemd/system ]; then
-   ln -s $prefix/etc/init.d/nrpe.service /usr/lib/systemd/system/nrpe.service
    systemctl daemon-reload
+   systemctl enable nrpe.service
 elif [ -x /sbin/insserv ]; then
    /sbin/insserv /etc/init.d/nrpe &> /dev/null
 elif [ -x /sbin/chkconfig ]; then
@@ -307,12 +314,41 @@ if [ -f $prefix/etc/nrpe.cfg ] ; then
    pkill -x nrpe
    /etc/init.d/nrpe start
 fi
+EOSPEC
+
+if [ -d /usr/lib/systemd/system ]; then
+
+cat << EOFILES >> $SPEC
 
 %files
 %(cd $SANDBOX; find opt '!' -type d | xargs stat --format "%%%attr(%a,%U,$nrpe_group) %n" | sed s,${prefix#/},$prefix,)
 %attr(755,$nrpe_user,$nrpe_group) $prefix/data
 %attr(755,$nrpe_user,$nrpe_group) $prefix/scripts
 %attr(755,$nrpe_user,$nrpe_group) $prefix/plugins-contrib
+%attr(766,$nrpe_user,$nrpe_group) /var/run/op5
+%attr(644,root,root) /usr/lib/systemd/system/nrpe.service
+%attr(644,root,root) /usr/lib/tmpfiles.d/nrpe.conf
+EOFILES
+
+else
+
+cat << EOFILES >> $SPEC
+
+%files
+%(cd $SANDBOX; find opt '!' -type d | xargs stat --format "%%%attr(%a,%U,$nrpe_group) %n" | sed s,${prefix#/},$prefix,)
+%attr(755,$nrpe_user,$nrpe_group) $prefix/data
+%attr(755,$nrpe_user,$nrpe_group) $prefix/scripts
+%attr(755,$nrpe_user,$nrpe_group) $prefix/plugins-contrib
+%attr(766,$nrpe_user,$nrpe_group) /var/run/op5
+
+%preun
+chkconfig nrpe off
+service nrpe stop
+EOFILES
+
+fi
+
+cat << EOPOSTUN >> $SPEC
 
 %preun
 chkconfig nrpe off
@@ -324,7 +360,7 @@ rm -rf /var/run/op5
 rm -rf $prefix/nrpe
 rm -rf $prefix/etc/init.d/
 rmdir --ignore-fail-on-non-empty $prefix/etc
-EOSPEC
+EOPOSTUN
 
    rpmbuild --define "_rpmdir $PKGDIR"  --buildroot=$SANDBOX -bb $SPEC
    mv ${PKGDIR}/`uname -i`/${pkgname}-${nrpe_version}-${packagerel}_${DISTVER}.`uname -i`.rpm /var/tmp/ && echo wrote /var/tmp/${pkgname}-${nrpe_version}-${packagerel}_${DISTVER}.`uname -i`.rpm
